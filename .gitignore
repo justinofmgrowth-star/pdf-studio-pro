@@ -1,0 +1,19 @@
+# Python & Environments
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary profiles & browser data
+deepseek_browser_profile/
+*.log
+
+# Generated test output files
+output/
+generated_pdfs/
+*.png
+*.jpg
+
+# Operating System Files
+.DS_Store
+Thumbs.db
