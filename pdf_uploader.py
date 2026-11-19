@@ -93,6 +93,32 @@ def upload_via_tempsh_engine(pdf_file_path: str) -> Optional[str]:
         print(f"[Temp.sh Upload Error] {e}")
     return None
 
+def verify_link_is_active(url: str, timeout: int = 8) -> bool:
+    """
+    Actively checks whether a URL returns HTTP 200 and points to a real accessible resource.
+    Prevents saving broken 404/403 URLs or soft 404 error pages.
+    """
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        }
+        r = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=True)
+        if r.status_code == 200:
+            ct = (r.headers.get("content-type") or "").lower()
+            if any(term in ct for term in ["pdf", "octet-stream", "document", "download"]):
+                return True
+            # Inspect initial bytes of HTML responses to detect soft 404s
+            if "html" in ct:
+                chunk = next(r.iter_content(1024), b"").decode("utf-8", errors="ignore").lower()
+                if any(err_term in chunk for err_term in ["404 not found", "page not found", "chttpexception", "requested url was not found", "error 404"]):
+                    return False
+            return True
+    except Exception:
+        pass
+    return False
+
 def scan_and_rank_file_inputs(page) -> List[Any]:
     """
     Intelligently reads the page DOM to discover all file upload inputs.
@@ -409,11 +435,60 @@ def auto_upload_pdf(
                 pass
 
         # 8. Deep Network & DOM Inspect Extraction (Poll up to 20 seconds)
+        # Uses strict filename matching and live HTTP 200 ping verification
+        base_stem = os.path.splitext(pdf_filename)[0].lower()
+        clean_stem = re.sub(r'[^a-zA-Z0-9]', '', base_stem)
         live_link = None
         start_wait = time.time()
 
         while time.time() - start_wait < 20:
-            # Check A: Hidden form inputs updated by AJAX upload callbacks (highest fidelity for FineUploader / Dropzone)
+            # Check A: Network-captured URLs (Exact matches verified with live HTTP ping)
+            if captured_urls:
+                for u in reversed(captured_urls):
+                    u_lower = u.lower()
+                    u_clean = re.sub(r'[^a-zA-Z0-9]', '', u_lower)
+                    if base_stem in u_lower or clean_stem in u_clean or pdf_filename.lower() in u_lower:
+                        if verify_link_is_active(u):
+                            live_link = u
+                            break
+            if live_link:
+                break
+
+            # Check B: DOM Links (Strictly matched to uploaded PDF filename, verified with live ping)
+            try:
+                dom_links = page.locator("a[href*='.pdf'], a[href*='download'], a[href*='/files/'], a[href*='/uploads/'], a[href*='webform']").all()
+                for a in dom_links:
+                    href = a.get_attribute("href")
+                    if href and href != "#" and href != target_page_url:
+                        href_lower = href.lower()
+                        href_clean = re.sub(r'[^a-zA-Z0-9]', '', href_lower)
+                        anchor_text = (a.inner_text() or "").lower()
+                        # Strict match: must belong to our uploaded file, ignore site privacy policies/terms
+                        if base_stem in href_lower or clean_stem in href_clean or base_stem in anchor_text:
+                            full_href = urljoin(target_page_url, href)
+                            if full_href.startswith("http") and "search" not in full_href.lower():
+                                if verify_link_is_active(full_href):
+                                    live_link = full_href
+                                    break
+            except Exception:
+                pass
+            if live_link:
+                break
+
+            # Check C: Readonly Inputs, Textareas, or Clipboard Copy buttons
+            try:
+                for inp in page.locator("input[readonly], input[value*='http'], textarea").all():
+                    val = (inp.get_attribute("value") or inp.input_value() or "").strip()
+                    if val.startswith("http") and any(term in val.lower() for term in ["download", "file", "view", ".pdf", "upload"]):
+                        if verify_link_is_active(val):
+                            live_link = val
+                            break
+            except Exception:
+                pass
+            if live_link:
+                break
+
+            # Check D: Hidden form inputs updated by AJAX upload callbacks (e.g. FineUploader, Dropzone)
             try:
                 hidden_scope = target_form if target_form else page
                 for h_name in ["attachname", "attachid", "imgfilename", "file_name", "uploaded_file", "attach"]:
@@ -421,54 +496,17 @@ def auto_upload_pdf(
                     for h_el in matched_inputs:
                         h_val = (h_el.get_attribute("value") or "").strip()
                         if h_val:
-                            if h_val.lower().endswith(".pdf") or pdf_filename.lower() in h_val.lower():
-                                live_link = urljoin(target_page_url, f"/uploads/files/{h_val}")
-                                break
-                            elif h_val.startswith("http"):
-                                live_link = h_val
-                                break
+                            h_clean = re.sub(r'[^a-zA-Z0-9]', '', h_val.lower())
+                            if base_stem in h_val.lower() or clean_stem in h_clean or h_val.lower().endswith(".pdf"):
+                                # Test candidate paths with live HTTP verification
+                                for cand_path in [f"/uploads/files/{h_val}", f"/uploads/{h_val}", f"/{h_val}"]:
+                                    cand_url = urljoin(target_page_url, cand_path)
+                                    if verify_link_is_active(cand_url):
+                                        live_link = cand_url
+                                        break
+                        if live_link:
+                            break
                     if live_link:
-                        break
-            except Exception:
-                pass
-            if live_link:
-                break
-
-            # Check B: Network-captured URLs (Prioritize exact PDF or file paths)
-            if captured_urls:
-                for u in reversed(captured_urls):
-                    if pdf_filename.lower() in u.lower() or u.lower().endswith(".pdf"):
-                        live_link = u
-                        break
-                if not live_link:
-                    for u in reversed(captured_urls):
-                        if any(term in u.lower() for term in ["/uploads/", "/files/", "/sites/default/files/", "download"]):
-                            live_link = u
-                            break
-            if live_link:
-                break
-
-            # Check C: DOM Links (<a> tags with .pdf, download, /files/)
-            try:
-                dom_links = page.locator("a[href*='.pdf'], a[href*='download'], a[href*='/files/'], a[href*='/uploads/'], a[href*='webform']").all()
-                for a in dom_links:
-                    href = a.get_attribute("href")
-                    if href and href != "#" and href != target_page_url:
-                        full_href = urljoin(target_page_url, href)
-                        if full_href.startswith("http") and "search" not in full_href.lower():
-                            live_link = full_href
-                            break
-            except Exception:
-                pass
-            if live_link:
-                break
-
-            # Check D: Readonly Inputs, Textareas, or Clipboard Copy buttons
-            try:
-                for inp in page.locator("input[readonly], input[value*='http'], textarea").all():
-                    val = (inp.get_attribute("value") or inp.input_value() or "").strip()
-                    if val.startswith("http") and any(term in val.lower() for term in ["download", "file", "view", ".pdf", "upload"]):
-                        live_link = val
                         break
             except Exception:
                 pass
@@ -477,29 +515,35 @@ def auto_upload_pdf(
 
             time.sleep(1)
 
-        # Check E: Page Redirection (e.g. view page after submission, ignore search queries)
+        # Check E: Page Redirection (e.g. view page after successful submission, ignore search queries)
         if not live_link and page.url != target_page_url:
             p_url_lower = page.url.lower()
             if "search" not in p_url_lower and "add" not in p_url_lower and "q=" not in p_url_lower:
-                live_link = page.url
+                if verify_link_is_active(page.url):
+                    live_link = page.url
 
         browser.close()
 
-        # 9. Handle Result Transparently (NO silent Catbox fallback)
+        # 9. Handle Result Transparently (NO fake 404s, NO unverified links)
         if not live_link and ajax_upload_payloads:
-            # If AJAX upload succeeded on the server (e.g. FineUploader returned 200 with UUID)
             for p_item in ajax_upload_payloads:
                 if isinstance(p_item, dict) and p_item.get("success") is True:
-                    u_name = p_item.get("uploadName") or pdf_filename
-                    live_link = urljoin(target_page_url, f"/uploads/{u_name}")
+                    u_name = p_item.get("uploadName") or p_item.get("name")
+                    if u_name:
+                        for test_p in [f"/uploads/files/{u_name}", f"/uploads/{u_name}"]:
+                            test_cand = urljoin(target_page_url, test_p)
+                            if verify_link_is_active(test_cand):
+                                live_link = test_cand
+                                break
+                if live_link:
                     break
 
         if not live_link:
             raise RuntimeError(
-                f"File was uploaded to {target_page_url}, but the website requires manual anti-spam verification or admin review before exposing a public link. Please enable 'Show Live Browser' in Tab 3 to complete verification."
+                f"File was uploaded to {target_page_url}, but the website holds submissions in private moderation or did not publish an accessible public link. No dead or 404 URL was saved."
             )
 
-        # Save to persistent tracker
+        # Save to persistent tracker (Only 100% verified HTTP 200 links reach here)
         save_uploaded_link(pdf_filename, target_page_url, live_link)
 
         return {
