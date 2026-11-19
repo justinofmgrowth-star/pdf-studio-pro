@@ -1,10 +1,20 @@
 import os
 import io
+import sys
 import time
 import zipfile
+import subprocess
 import pandas as pd
 import streamlit as st
 import importlib
+
+# Auto-install Playwright chromium browser on Linux cloud if needed
+if sys.platform.startswith("linux"):
+    try:
+        subprocess.run(["playwright", "install", "chromium"], check=False)
+    except Exception:
+        pass
+
 import pdf_engine
 importlib.reload(pdf_engine)
 from pdf_engine import process_master_pdf_single_product, sanitize_filename, ANGLE_ARCHETYPES
