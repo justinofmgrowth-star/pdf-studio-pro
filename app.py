@@ -190,7 +190,7 @@ with st.sidebar:
     st.markdown("##### ⚙️ Generator Settings")
     st.caption("1 Product • 1 Link • Multi-Angle PDFs")
     
-    button_color = st.color_picker("Primary CTA Button Color:", value="#08796f")
+    button_color = st.color_picker("Primary CTA Button Color:", value=st.session_state.get("cta_color_val", "#08796f"))
     target_country = st.selectbox("Target Country:", ["GLOBAL", "USA", "UK", "CANADA", "AUSTRALIA"])
     target_audience = st.text_input("Target Audience:", value="Savvy Online Buyers & Enthusiasts")
 
@@ -343,7 +343,13 @@ with tab1:
                 st.session_state["affiliate_input"] = target_scrape_url
                 if res_scrape.get("theme_primary"):
                     st.session_state["theme_input"] = res_scrape["theme_primary"]
-                st.session_state["autofetch_alert"] = ("success", f"Successfully synchronized verified assets for '{p_name or target_scrape_url}'!")
+                if res_scrape.get("cta_color"):
+                    st.session_state["cta_color_val"] = res_scrape["cta_color"]
+                
+                n_b = len(res_scrape.get("bonuses", []))
+                n_img = len(res_scrape.get("secondary_images", [])) + (1 if res_scrape.get("product_image") else 0)
+                bonus_detail = f"{n_b} Bonuses, {n_img} Images, Sales Page Theme: {res_scrape.get('theme_primary', 'Auto')}"
+                st.session_state["autofetch_alert"] = ("success", f"Deep-scanned verified assets for '{p_name or target_scrape_url}' ({bonus_detail})!")
             else:
                 err_msg = res_scrape.get("error", "Could not fully parse")
                 st.session_state["autofetch_alert"] = ("warning", f"Sync note: {err_msg}. High-authority verified fallbacks applied.")

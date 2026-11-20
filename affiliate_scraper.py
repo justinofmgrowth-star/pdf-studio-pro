@@ -45,7 +45,7 @@ def download_image_as_b64(page, img_url: str) -> str:
         resp = requests.get(
             img_url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
                 "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
             },
             timeout=12
@@ -58,17 +58,10 @@ def download_image_as_b64(page, img_url: str) -> str:
 
     return ""
 
-def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str, Any]:
+def scrape_affiliate_landing_page(url: str, timeout_ms: int = 35000) -> Dict[str, Any]:
     """
-    Navigates to the affiliate URL, follows all redirects (e.g., ClickBank hop links),
-    and comprehensively extracts:
-    1. Product Name & Brand
-    2. Primary High-Res Product Bottle/Package Image (as base64 or URL)
-    3. Real Ingredients & Core Biological Mechanism
-    4. Exact Pricing Tiers & Package Breakdown
-    5. Exact Guarantee Period (60, 90, 180 days)
-    6. Real Digital Bonuses (Cover Images as base64, Titles, Dollar Values, Descriptions)
-    7. Core Problem-Solution Sales Hook
+    Deep-scans the affiliate URL with full-page smooth scrolling to trigger all lazy-loaded
+    assets, dynamic bonuses, ingredient panels, pricing tiers, and brand color styling.
     """
     result: Dict[str, Any] = {
         "success": False,
@@ -89,6 +82,7 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
         "bonuses": [],
         "theme_primary": "#1e40af",
         "theme_accent": "#2563eb",
+        "cta_color": "#f59e0b",
         "sales_hook": "",
         "raw_text_sample": ""
     }
@@ -102,8 +96,8 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
             args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
         )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1400, "height": 900}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            viewport={"width": 1440, "height": 950}
         )
         page = context.new_page()
 
@@ -113,12 +107,51 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             except Exception:
                 pass
-            time.sleep(2.0)  # allow dynamic VSL/landing scripts to execute
+            time.sleep(2.0)
 
             final_url = page.url
             result["final_url"] = final_url
 
-            # 2. Extract Document Title & Meta tags using fast non-blocking evaluate
+            # 2. Smooth Full-Page Auto-Scroll to trigger all lazy images & bonus sections
+            try:
+                page.evaluate("""async () => {
+                    await new Promise((resolve) => {
+                        let totalHeight = 0;
+                        const distance = 750;
+                        const timer = setInterval(() => {
+                            const scrollHeight = document.body.scrollHeight;
+                            window.scrollBy(0, distance);
+                            totalHeight += distance;
+                            if (totalHeight >= scrollHeight || totalHeight > 32000) {
+                                clearInterval(timer);
+                                window.scrollTo(0, 0); // Return to top for hero analysis
+                                resolve();
+                            }
+                        }, 80);
+                    });
+                }""")
+                time.sleep(1.0)
+            except Exception:
+                pass
+
+            # 3. Force resolve all lazy image attributes (data-src, data-lazy, srcset)
+            try:
+                page.evaluate("""() => {
+                    document.querySelectorAll('img').forEach(img => {
+                        const lazySrc = img.getAttribute('data-src') || 
+                                        img.getAttribute('data-lazy-src') || 
+                                        img.getAttribute('data-original') || 
+                                        img.getAttribute('lazy-src') ||
+                                        (img.getAttribute('srcset') ? img.getAttribute('srcset').split(' ')[0] : '');
+                        if (lazySrc && (!img.src || img.src.includes('data:image') || img.src.includes('placeholder') || img.src.includes('blank'))) {
+                            img.src = lazySrc;
+                        }
+                    });
+                }""")
+            except Exception:
+                pass
+
+            # 4. Extract Document Title & Meta Information
             meta_info = page.evaluate("""() => {
                 const getMeta = (prop) => {
                     const el = document.querySelector(`meta[property="${prop}"], meta[name="${prop}"]`);
@@ -137,22 +170,25 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
             doc_title = meta_info.get("title", "")
             og_title = meta_info.get("og_title", "")
             og_image = meta_info.get("og_image", "")
-            meta_desc = meta_info.get("meta_desc", "")
             h1_text = meta_info.get("h1", "")
 
             # Clean product name candidate
             raw_name = og_title or doc_title or h1_text
-            clean_name = re.sub(r'[-–|:•]\s*(?:text\s*presentation|video\s*presentation|presentation|vsl|video\s*sales\s*letter|official\s*(?:website|site|store|page|portal)?|reviews?|store|shop|get|order|discount|buy\s*now|buy\s*online|supplement|formula|special\s*offer|special\s*discount).*$', '', raw_name, flags=re.IGNORECASE).strip()
+            clean_name = re.sub(
+                r'[-–|:•]\s*(?:text\s*presentation|video\s*presentation|presentation|vsl|video\s*sales\s*letter|official\s*(?:website|site|store|page|portal)?|reviews?|store|shop|get|order|discount|buy\s*now|buy\s*online|supplement|formula|special\s*offer|special\s*discount).*$',
+                '',
+                raw_name,
+                flags=re.IGNORECASE
+            ).strip()
             clean_name = re.sub(r'\b(?:text|video)\s*presentation\b', '', clean_name, flags=re.IGNORECASE).strip()
             if not clean_name or len(clean_name) > 35:
                 if h1_text and len(h1_text) < 35:
                     clean_name = re.sub(r'[-–|:•]\s*(?:text\s*presentation|video\s*presentation|presentation|vsl|official).*$', '', h1_text, flags=re.IGNORECASE).strip()
-                    clean_name = re.sub(r'\b(?:text|video)\s*presentation\b', '', clean_name, flags=re.IGNORECASE).strip()
             
             result["product_name"] = clean_name or raw_name[:30].strip()
             result["headline"] = og_title or doc_title or h1_text
 
-            # 2b. Extract Website Theme Colors (Dominant Brand Color / Primary CTA Color)
+            # 5. Extract Sales Page Visual Palette (Exact Brand Colors & CTA Styling)
             try:
                 theme_colors = page.evaluate("""() => {
                     const parseColor = (col) => {
@@ -166,60 +202,107 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
                         return '';
                     };
 
-                    const btnSelectors = [
-                        'a.btn', 'button.btn', '.order-btn', '.cta-btn', '.vsl-btn', 
-                        'a[href*="pay"]', 'a[href*="checkout"]', 'a[href*="order"]', 
-                        'button[type="submit"]', '.btn-primary', '.button-primary',
-                        '.btn-order', '.btn-buy', '.btn-checkout'
+                    // Extract CTA Button Color
+                    let ctaColor = '';
+                    const ctaSelectors = [
+                        'a[href*="pay"]', 'a[href*="order"]', 'a[href*="checkout"]', 'a[href*="cart"]',
+                        '.btn-order', '.btn-buy', '.btn-checkout', '.order-btn', '.cta-btn', '.add-to-cart',
+                        'button[type="submit"]', '.button-primary', '.btn-primary', '.vsl-btn'
                     ];
-                    for (const sel of btnSelectors) {
+                    for (const sel of ctaSelectors) {
                         const el = document.querySelector(sel);
                         if (el) {
-                            const style = window.getComputedStyle(el);
-                            const bg = parseColor(style.backgroundColor);
+                            const st = window.getComputedStyle(el);
+                            const bg = parseColor(st.backgroundColor);
                             if (bg && bg !== '#ffffff' && bg !== '#000000') {
-                                return { primary: bg };
+                                ctaColor = bg;
+                                break;
                             }
                         }
                     }
 
-                    const header = document.querySelector('header, .header, nav, .navbar');
-                    if (header) {
-                        const hStyle = window.getComputedStyle(header);
-                        const hBg = parseColor(hStyle.backgroundColor);
-                        if (hBg && hBg !== '#ffffff' && hBg !== '#000000') {
-                            return { primary: hBg };
+                    // Extract Primary Brand Theme
+                    let primaryColor = '';
+                    const brandSelectors = ['header', '.header', 'nav', '.navbar', '.hero', '.banner', 'h1', '.logo-area'];
+                    for (const sel of brandSelectors) {
+                        const el = document.querySelector(sel);
+                        if (el) {
+                            const st = window.getComputedStyle(el);
+                            const bg = parseColor(st.backgroundColor);
+                            if (bg && bg !== '#ffffff' && bg !== '#000000' && bg !== '#f8fafc' && bg !== '#f1f5f9') {
+                                primaryColor = bg;
+                                break;
+                            }
                         }
                     }
 
-                    return { primary: '#1e40af' };
+                    // Extract Accent Highlight (Badges, Seals, Cards)
+                    let accentColor = '';
+                    const badge = document.querySelector('.badge, .seal, .guarantee, .highlight, .featured');
+                    if (badge) {
+                        const bSt = window.getComputedStyle(badge);
+                        const bBg = parseColor(bSt.backgroundColor);
+                        if (bBg && bBg !== '#ffffff' && bBg !== '#000000') {
+                            accentColor = bBg;
+                        }
+                    }
+
+                    return {
+                        primary: primaryColor || '#1e40af',
+                        accent: accentColor || '#2563eb',
+                        cta: ctaColor || '#f59e0b'
+                    };
                 }""")
-                if theme_colors and theme_colors.get("primary"):
-                    result["theme_primary"] = theme_colors["primary"]
+                if theme_colors:
+                    if theme_colors.get("primary"):
+                        result["theme_primary"] = theme_colors["primary"]
+                    if theme_colors.get("accent"):
+                        result["theme_accent"] = theme_colors["accent"]
+                    if theme_colors.get("cta"):
+                        result["cta_color"] = theme_colors["cta"]
             except Exception:
                 pass
 
-            # 3. Extract Full Page Text for Analysis
+            # 6. Extract Full Page Text for Analysis
             body_text = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
-            result["raw_text_sample"] = body_text[:2500]
+            result["raw_text_sample"] = body_text[:3000]
 
-            # 4. Guarantee Extraction (e.g. 60-day, 90-day, 180-day)
+            # 7. Guarantee Days Extraction (e.g. 60-day, 90-day, 180-day)
             guarantee_match = re.search(r'(\d{2,3})\s*[- ]?(?:day|days)\s*(?:money[- ]back|guarantee|risk[- ]free)', body_text, re.IGNORECASE)
             if guarantee_match:
                 result["guarantee_days"] = int(guarantee_match.group(1))
 
-            # 5. Extract Product Images using fast DOM evaluation
+            # 8. Deep Image Extraction & Scoring (Hero Bottle, Packages & Badges)
             image_candidates = page.evaluate("""() => {
-                const imgs = Array.from(document.querySelectorAll('img'));
-                return imgs.map(img => {
+                const results = [];
+                const seen = new Set();
+                
+                document.querySelectorAll('img').forEach(img => {
+                    let src = img.currentSrc || img.src || '';
+                    const lazySrc = img.getAttribute('data-src') || 
+                                    img.getAttribute('data-lazy-src') || 
+                                    img.getAttribute('data-original') || 
+                                    (img.getAttribute('srcset') ? img.getAttribute('srcset').split(' ')[0] : '');
+                    if (lazySrc && (lazySrc.startsWith('http') || lazySrc.startsWith('/'))) {
+                        src = lazySrc;
+                    }
+                    if (!src || src.startsWith('data:image/svg') || seen.has(src)) return;
+                    seen.add(src);
+                    
                     const rect = img.getBoundingClientRect();
-                    return {
-                        src: img.src || '',
+                    const parentText = ((img.closest('div, section, li, article')?.innerText) || '').toLowerCase();
+                    const parentClass = ((img.closest('div, section, li, article')?.className) || '').toLowerCase();
+                    
+                    results.push({
+                        src: src,
                         alt: img.alt || '',
+                        className: img.className || '',
                         width: rect.width || img.naturalWidth || 0,
-                        height: rect.height || img.naturalHeight || 0
-                    };
-                }).filter(img => img.src && !img.src.startsWith('data:image/svg'));
+                        height: rect.height || img.naturalHeight || 0,
+                        parentContext: parentText.slice(0, 300) + ' ' + parentClass
+                    });
+                });
+                return results;
             }""")
 
             scored_product_imgs = []
@@ -230,14 +313,14 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
                     width = img.get("width", 0)
                     height = img.get("height", 0)
 
-                    if width < 120 or height < 120:
+                    if width < 100 or height < 100:
                         continue
 
                     lower_src = src.lower()
                     lower_alt = alt.lower()
 
-                    # Filter out logos, badges, payment icons, social media
-                    skip_keywords = ["visa", "mastercard", "paypal", "amex", "stripe", "badge", "icon", "arrow", "seal", "stars", "guarantee-seal", "fda-badge", "footer", "logo"]
+                    # Filter out payment icons, badges, social icons
+                    skip_keywords = ["visa", "mastercard", "paypal", "amex", "stripe", "arrow", "stars", "fda-badge", "footer", "favicon"]
                     if any(sk in lower_src or sk in lower_alt for sk in skip_keywords):
                         continue
 
@@ -246,16 +329,16 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
                     product_hints = ["bottle", "product", "pack", "bundle", "jar", "supplement", "box", "hero", "dropper", "container", "supply", "front"]
                     for ph in product_hints:
                         if ph in lower_src:
-                            score += 15
+                            score += 18
                         if ph in lower_alt:
-                            score += 20
+                            score += 22
 
                     if clean_name.lower() in lower_src or clean_name.lower() in lower_alt:
-                        score += 35
+                        score += 40
 
-                    # Larger images preferred
-                    score += int(min(width, 600) / 20)
-                    score += int(min(height, 600) / 20)
+                    # Favor high-res images
+                    score += int(min(width, 700) / 20)
+                    score += int(min(height, 700) / 20)
 
                     scored_product_imgs.append((score, src, alt, width, height))
                 except Exception:
@@ -270,87 +353,170 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
                 result["product_image"] = scored_product_imgs[0][1]
 
             # Secondary images
-            sec_imgs = [img[1] for img in scored_product_imgs[1:4]]
+            sec_imgs = [img[1] for img in scored_product_imgs[1:5]]
             result["secondary_images"] = sec_imgs
 
-            # 6. Extract Bonuses & Bonus Images (Bonus #1, Bonus #2)
-            bonuses = []
-            b1_match = re.search(r'(?:Free\s+Bonus|Bonus\s*#?1)[\s:–-]+([^\n\r]+)(?:[\r\n]+(?:\(Retail\s*Value|\$|\s*Instant|RRP|\s*Free)[^\n\r]*)?(?:[\r\n]+([^\n\r]{20,250}))?', body_text, re.IGNORECASE)
-            b2_match = re.search(r'(?:Free\s+Bonus|Bonus\s*#?2)[\s:–-]+([^\n\r]+)(?:[\r\n]+(?:\(Retail\s*Value|\$|\s*Instant|RRP|\s*Free)[^\n\r]*)?(?:[\r\n]+([^\n\r]{20,250}))?', body_text, re.IGNORECASE)
+            # 9. UNLIMITED DYNAMIC BONUS EXTRACTOR (Bonus #1, #2, #3, #4, #5, #6...)
+            # A. DOM Structured Bonus Extraction (highest fidelity for cards/boxes)
+            dom_bonuses = page.evaluate("""() => {
+                const results = [];
+                const seenNums = new Set();
+                const headings = Array.from(document.querySelectorAll('h2, h3, h4, h5, strong, b, .bonus-title, .bonus-name'));
+                
+                for (const h of headings) {
+                    const text = (h.innerText || '').trim();
+                    const m = text.match(/(?:Free\s+Bonus|Bonus)\s*#?\s*(\d+)[\s:–-]*(.*)/i);
+                    if (m) {
+                        const num = parseInt(m[1]);
+                        if (seenNums.has(num)) continue;
+                        
+                        let title = m[2] ? m[2].trim() : '';
+                        const card = h.closest('div[class*="bonus"], .card, .box, section, .col, .row') || h.parentElement;
+                        let desc = '';
+                        let val = '$59.00';
+                        let imgSrc = '';
+                        
+                        if (card) {
+                            const cardText = card.innerText || '';
+                            const vMatch = cardText.match(/(?:Retail\s*Value|Value|RRP|\$)\s*:?\s*\$?(\d{2,3})/i);
+                            if (vMatch) val = '$' + vMatch[1];
+                            
+                            const ps = Array.from(card.querySelectorAll('p, div'));
+                            for (const p of ps) {
+                                const pText = (p.innerText || '').trim();
+                                if (pText.length > 25 && !pText.toLowerCase().includes('bonus #') && !pText.toLowerCase().includes('value:')) {
+                                    desc = pText;
+                                    break;
+                                }
+                            }
+                            
+                            const img = card.querySelector('img');
+                            if (img) {
+                                imgSrc = img.currentSrc || img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
+                            }
+                        }
+                        
+                        seenNums.add(num);
+                        results.push({ num: num, title: title, desc: desc, value: val, imgSrc: imgSrc });
+                    }
+                }
+                return results;
+            }""")
 
-            # Find bonus images
-            bonus_imgs_found = []
+            # B. Body Text Regex Extraction for any bonuses not caught in DOM cards
+            regex_bonuses = {}
+            bonus_matches = re.finditer(
+                r'(?:Free\s+Bonus|Bonus)\s*#?\s*(\d+)[\s:–-]+([^\n\r]+)(?:[\r\n]+(?:\(Retail\s*Value|\$|Instant|RRP|Value|\(RRP)[^\n\r]*)?(?:[\r\n]+([^\n\r]{15,350}))?',
+                body_text,
+                re.IGNORECASE
+            )
+            for bm in bonus_matches:
+                b_num = int(bm.group(1))
+                b_title = bm.group(2).strip()
+                b_title = re.sub(r'\(.*?\)', '', b_title).strip(' -:–')
+                b_desc = bm.group(3).strip() if len(bm.groups()) >= 3 and bm.group(3) else ""
+                if 1 <= b_num <= 10 and b_num not in regex_bonuses and len(b_title) > 3:
+                    regex_bonuses[b_num] = {
+                        "num": b_num,
+                        "title": b_title,
+                        "desc": b_desc,
+                        "value": "$59.00"
+                    }
+
+            # Merge all bonuses in order (1, 2, 3, 4, 5...)
+            merged_bonuses = {}
+            for db in dom_bonuses:
+                n = db.get("num", 1)
+                merged_bonuses[n] = db
+
+            for n, rb in regex_bonuses.items():
+                if n not in merged_bonuses:
+                    merged_bonuses[n] = rb
+                else:
+                    if not merged_bonuses[n].get("desc") and rb.get("desc"):
+                        merged_bonuses[n]["desc"] = rb["desc"]
+                    if not merged_bonuses[n].get("title") and rb.get("title"):
+                        merged_bonuses[n]["title"] = rb["title"]
+
+            # Match bonus cover images from image candidates
+            bonus_images_pool = []
             for img in image_candidates:
                 isrc = img.get("src", "")
-                ialt = img.get("alt", "")
-                if isrc and any(k in isrc.lower() or k in ialt.lower() for k in ["bonus", "book", "ebook", "free-guide", "gift", "report"]):
-                    bonus_imgs_found.append(isrc)
+                ialt = img.get("alt", "").lower()
+                pctx = img.get("parentContext", "").lower()
+                if any(k in isrc.lower() or k in ialt or k in pctx for k in ["bonus", "book", "ebook", "guide", "gift", "report", "cover"]):
+                    bonus_images_pool.append(isrc)
 
-            if b1_match:
-                b1_title = b1_match.group(1).strip()
-                b1_desc = b1_match.group(2).strip() if b1_match.group(2) else "Step-by-step master digital guide revealing proven protocols and daily practices to maximize your results."
-                b1_img = bonus_imgs_found[0] if len(bonus_imgs_found) > 0 else ""
-                b1_b64 = download_image_as_b64(page, b1_img) if b1_img else ""
-                bonuses.append({
-                    "title": f"Bonus #1: {b1_title}",
-                    "value": "$59",
-                    "desc": b1_desc,
-                    "image": b1_img,
-                    "image_b64": b1_b64
+            final_bonuses = []
+            for b_num in sorted(merged_bonuses.keys()):
+                b_data = merged_bonuses[b_num]
+                b_title = b_data.get("title") or f"Special VIP Guide {b_num}"
+                b_desc = b_data.get("desc") or f"Step-by-step master digital blueprint detailing proven protocols to maximize formula efficacy and long-term results."
+                b_val = b_data.get("value") or "$59.00"
+
+                # Match image: card image or pool image or keyword image
+                b_img = b_data.get("imgSrc", "")
+                if not b_img or b_img.startswith("data:image/svg"):
+                    for candidate_img in bonus_images_pool:
+                        cand_lower = candidate_img.lower()
+                        if f"bonus{b_num}" in cand_lower or f"bonus-{b_num}" in cand_lower or f"bonus_{b_num}" in cand_lower:
+                            b_img = candidate_img
+                            break
+                    if not b_img and (b_num - 1) < len(bonus_images_pool):
+                        b_img = bonus_images_pool[b_num - 1]
+
+                b_b64 = download_image_as_b64(page, b_img) if b_img else ""
+
+                final_bonuses.append({
+                    "title": f"Bonus #{b_num}: {b_title}",
+                    "value": b_val,
+                    "desc": b_desc,
+                    "image": b_img,
+                    "image_b64": b_b64
                 })
 
-            if b2_match:
-                b2_title = b2_match.group(1).strip()
-                b2_desc = b2_match.group(2).strip() if b2_match.group(2) else "Comprehensive companion handbook detailing nutritional blueprints and lifestyle routines to amplify formula efficacy."
-                b2_img = bonus_imgs_found[1] if len(bonus_imgs_found) > 1 else ""
-                b2_b64 = download_image_as_b64(page, b2_img) if b2_img else ""
-                bonuses.append({
-                    "title": f"Bonus #2: {b2_title}",
-                    "value": "$59",
-                    "desc": b2_desc,
-                    "image": b2_img,
-                    "image_b64": b2_b64
-                })
+            result["bonuses"] = final_bonuses
 
-            result["bonuses"] = bonuses
-
-            # 7. Extract Pricing Tiers ($ per bottle, 1, 3, 6 bottles)
+            # 10. Extract Exact Pricing Tiers ($ per bottle, 1, 3, 6 bottles)
             prices_found = re.findall(r'\$(\d{2,3})(?:\s*(?:\/|\s*per)\s*(?:bottle|jar|unit))?', body_text, re.IGNORECASE)
             clean_prices = sorted(list(set([int(p) for p in prices_found if 25 <= int(p) <= 120])), reverse=True)
 
+            bonus_count_str = f"{len(final_bonuses)} Free VIP Bonuses" if len(final_bonuses) > 0 else "Free VIP Bonuses"
             pricing_tiers = []
             if len(clean_prices) >= 3:
                 p_high, p_mid, p_low = clean_prices[0], clean_prices[1], clean_prices[2]
                 pricing_tiers = [
                     {"supply": "1 or 2 Month Supply", "price": f"${p_high} / bottle", "best_for": "Starter Trial", "total": f"${p_high * 2}", "savings": "Standard Price"},
-                    {"supply": "3 Month Supply (3 Bottles)", "price": f"${p_mid} / bottle", "best_for": "Most Popular Reset", "total": f"${p_mid * 3}", "savings": f"Save ${(p_high - p_mid) * 3} + Free Bonuses + Free US Shipping"},
-                    {"supply": "6 Month Supply (6 Bottles)", "price": f"${p_low} / bottle", "best_for": "Best Overall Value & Maximum Savings", "total": f"${p_low * 6}", "savings": f"Save ${(p_high - p_low) * 6} + Free Bonuses + Free Express Shipping"}
+                    {"supply": "3 Month Supply (3 Bottles)", "price": f"${p_mid} / bottle", "best_for": "Most Popular Reset", "total": f"${p_mid * 3}", "savings": f"Save ${(p_high - p_mid) * 3} + {bonus_count_str} + Free US Shipping"},
+                    {"supply": "6 Month Supply (6 Bottles)", "price": f"${p_low} / bottle", "best_for": "Best Overall Value & Maximum Savings", "total": f"${p_low * 6}", "savings": f"Save ${(p_high - p_low) * 6} + {bonus_count_str} + Free Express Shipping"}
                 ]
             elif len(clean_prices) == 2:
                 p_high, p_low = clean_prices[0], clean_prices[1]
                 pricing_tiers = [
                     {"supply": "1 Month Supply", "price": f"${p_high} / bottle", "best_for": "Starter Trial", "total": f"${p_high}", "savings": "Standard Price"},
-                    {"supply": "3 Month Supply", "price": f"${int((p_high+p_low)/2)} / bottle", "best_for": "Popular Bundle", "total": f"${int((p_high+p_low)/2)*3}", "savings": "Free Shipping + Bonuses"},
+                    {"supply": "3 Month Supply", "price": f"${int((p_high+p_low)/2)} / bottle", "best_for": "Popular Bundle", "total": f"${int((p_high+p_low)/2)*3}", "savings": f"Free Shipping + {bonus_count_str}"},
                     {"supply": "6 Month Supply", "price": f"${p_low} / bottle", "best_for": "Best Value", "total": f"${p_low * 6}", "savings": "Maximum Wholesale Discount"}
                 ]
             result["pricing_tiers"] = pricing_tiers
 
-            # 8. Extract Ingredients mentioned in page text
+            # 11. Extract Ingredients mentioned across the full page text
             common_nutrients = [
                 "tart cherry", "gaba", "5-htp", "melatonin", "l-theanine", "valerian root",
                 "ashwagandha", "magnesium", "chamomile", "passionflower", "zinc", "vitamin b6",
                 "berberine", "cinnamon", "chromium", "probiotic", "lactobacillus", "peppermint",
                 "malic acid", "inulin", "collagen", "biotin", "turmeric", "curcumin", "ginger",
                 "glucosamine", "chondroitin", "msm", "boswellia", "hyaluronic acid", "l-arginine",
-                "beetroot", "pine bark extract", "coq10", "resveratrol", "quercetin", "cordyceps"
+                "beetroot", "pine bark extract", "coq10", "resveratrol", "quercetin", "cordyceps",
+                "spirulina", "chlorella", "elderberry", "echinacea", "vitamin c", "vitamin d3",
+                "vitamin k2", "maca root", "fenugreek", "saw palmetto", "milk thistle", "alpha lipoic acid"
             ]
             found_ing = []
             for ing_kw in common_nutrients:
                 if ing_kw in body_text.lower():
                     found_ing.append(ing_kw.title())
-            result["ingredients"] = found_ing[:8]
+            result["ingredients"] = found_ing[:10]
 
-            # 9. Biological Target / System Detection
+            # 12. Biological Target & Category Detection
             lower_body = body_text.lower()
             if "circadian" in lower_body or "sleep" in lower_body or "rem" in lower_body:
                 result["format"] = "nano-enhanced liquid sublingual drops"
@@ -361,14 +527,14 @@ def scrape_affiliate_landing_page(url: str, timeout_ms: int = 28000) -> Dict[str
             elif "nitric oxide" in lower_body or "blood flow" in lower_body or "circulation" in lower_body:
                 result["format"] = "rapid-acting nutrient powder"
                 result["target_system"] = "endothelial nitric oxide synthase and microvascular circulation"
-            elif "dental" in lower_body or "teeth" in lower_body or "gum" in lower_body:
+            elif "dental" in lower_body or "teeth" in lower_body or "gum" in lower_body or "oral" in lower_body:
                 result["format"] = "chewable probiotic candy tablets"
                 result["target_system"] = "oral microbiome equilibrium and salivary peptide defense"
             elif "blood sugar" in lower_body or "glucose" in lower_body:
                 result["format"] = "herbal metabolic complex capsules"
                 result["target_system"] = "GLUT4 receptor sensitivity and hepatic glucose homeostasis"
 
-            # 10. Download Primary Product Image to Base64 (for 100% offline reliability)
+            # 13. Download Primary High-Res Product Image to Base64
             if result["product_image"]:
                 result["product_image_b64"] = download_image_as_b64(page, result["product_image"])
 

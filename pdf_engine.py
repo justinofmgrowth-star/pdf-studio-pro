@@ -786,7 +786,7 @@ def build_unique_article_content_for_angle(
         </p>
         <div style="text-align: center; margin-top: 14px;">
             <a href="{affiliate_url}" target="_blank" rel="nofollow sponsored noopener" class="rc-btn rc-btn-coral" style="padding: 12px 34px; font-size: 10.5pt; display: inline-block;">
-                CLAIM 6-BOTTLE DISCOUNT + 2 FREE BONUSES NOW
+                CLAIM 6-BOTTLE DISCOUNT{' + ' + str(len(res['free_bonuses'])) + ' FREE BONUSES' if len(res.get('free_bonuses', [])) > 0 else ''} NOW
             </a>
             <div class="rc-trust-subline">Official Site • Free Express Shipping • {guarantee_days}-Day Guarantee</div>
         </div>
@@ -827,7 +827,7 @@ def build_unique_article_content_for_angle(
                 </tr>
                 <tr>
                     <td style="padding: 9px 12px; font-weight: 700;">Guarantee & Bonuses</td>
-                    <td style="padding: 9px 12px; color: #16a34a; font-weight: 700;">60-Day 100% Refund + 2 Free VIP Digital Guides</td>
+                    <td style="padding: 9px 12px; color: #16a34a; font-weight: 700;">{res.get('guarantee_days', 60)}-Day 100% Refund + {len(res.get('free_bonuses', []))} Free VIP Digital Guides</td>
                     <td style="padding: 9px 12px; color: #64748b;">No money-back guarantee once opened</td>
                 </tr>
             </tbody>
@@ -835,14 +835,17 @@ def build_unique_article_content_for_angle(
     </div>
     """
 
+    num_b = len(res.get('free_bonuses', []))
+    bonus_phrase = f"{num_b} exclusive VIP digital bonuses" if num_b > 1 else "exclusive VIP digital bonuses"
+
     pros_points = [
         f"Multi-pathway formula addressing {res['target_system']} simultaneously",
         f"Advanced {res['format']} ensures superior bioavailability over swallowed capsules",
         f"Contains zero synthetic sedatives, harsh stimulants, or habit-forming substances",
         f"Compounded exclusively in an {res['regulatory']}",
         f"Multi-bottle supply tiers provide up to 50% wholesale savings",
-        f"Includes 2 exclusive VIP digital bonuses and free shipping on popular packages",
-        f"Backed by an unconditional 60-day 100% money-back satisfaction guarantee",
+        f"Includes {bonus_phrase} and free shipping on popular packages",
+        f"Backed by an unconditional {res.get('guarantee_days', 60)}-day 100% money-back satisfaction guarantee",
         f"Supported by peer-reviewed published clinical trials in reputable medical journals"
     ]
     cons_points = [
@@ -855,10 +858,10 @@ def build_unique_article_content_for_angle(
 
     checklist_points = [
         f"Order exclusively through the official channel to guarantee genuine USP-grade batch purity",
-        f"Choose the 3-month or 6-month package to secure maximum savings and both free digital bonuses",
+        f"Choose the 3-month or 6-month package to secure maximum savings and all {num_b} free digital bonuses",
         f"Review the full active ingredient panel with your physician if taking prescription medications",
         f"Commit to a minimum 30-day consistent daily protocol to allow full cellular adaptation",
-        f"Save your digital order confirmation to activate your 60-day 100% money-back guarantee"
+        f"Save your digital order confirmation to activate your {res.get('guarantee_days', 60)}-day 100% money-back guarantee"
     ]
 
     faqs = [
